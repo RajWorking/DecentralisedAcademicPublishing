@@ -35,7 +35,7 @@ struct Paper {
 struct Review {
     address reviewer;
     uint256 paperID;
-    string content;
+    string comments;
     ReviewResult reviewerDecision;
     address[] votedReviewers;
     mapping(address => Vote) votes;
@@ -44,54 +44,101 @@ struct Review {
     uint256 noCount;
 }
 
+struct Reviewer {
+    address reviewerAddress;
+    string name;
+}
+
 contract Conference is Ownable {
-    mapping(address => uint256) reviewers;
+    // @dev these two are a list of all the reviewer with ther data
+    mapping(address => Reviewer) private reviewers;
+    address[] public reviewerslist;
+
     mapping(uint256 => Paper) papers;
+    uint256[] public paperlist;
+
     uint256 vote_limit = 0;
     uint256 review_limit = 0;
     uint256 num_papers = 0;
 
-    // function to hire a reviewer
-    function registerReviewer(address _reviewerAddress) public onlyOwner {
-        reviewers[_reviewerAddress] = 1;
+    // @dev verifies if the reviewer has registered or not
+    modifier validReviewer(address _reviewerAddress) {
+        require(
+            _reviewerAddress == reviewers[_reviewerAddress].reviewerAddress,
+            "unregistered reviewer"
+        );
+        _;
     }
 
-    // function to fire a reviewer
-    function removeReviewer(address _reviewerAddress) public onlyOwner {
-        reviewers[_reviewerAddress] = 0;
+    // @dev allows contract owner to register a new reviewer
+    function registerReviewer(address _reviewerAddress, string calldata _name)
+        public
+        onlyOwner
+    {
+        if (reviewers[_reviewerAddress].reviewerAddress == address(0)) {
+            reviewers[_reviewerAddress].reviewerAddress = _reviewerAddress;
+            reviewers[_reviewerAddress].name = _name;
+            reviewerslist.push(_reviewerAddress);
+        }
     }
 
-    function viewPapersToBeReviewed() public view returns (Paper[]) {
+    function getPaper(uint256 _paperID)
+        public
+        view
+        returns (string memory content)
+    {
+        // function to get a paper from paperID
+        return papers[_paperID].content;
+    }
+
+    function applyPaper(
+        string calldata _paperContent,
+        address _publisher,
+        address[] memory _authors
+    ) public payable {
+        // function to send a paper to the conference
+        // store paper itself
+
+        uint256 new_paperID = uint256(
+            keccak256(
+                abi.encodePacked(block.timestamp, msg.sender, _paperContent)
+            )
+        );
+        papers[new_paperID].paperID = new_paperID;
+        papers[new_paperID].status = Status.ADDED;
+        papers[new_paperID].content = _paperContent;
+        papers[new_paperID].publisher = _publisher;
+        papers[new_paperID].authors = _authors;
+
+        paperlist.push(new_paperID);
+    }
+
+    function viewPapersToBeReviewed() public view returns (uint256[10] memory) {
         // function to view all the papers that havent been reviewed
-        Paper[] return_value;
-        for (uint256 i = 0; i < papers.length; i++) {
+        uint256[10] memory rlist;
+        uint256 j = 0;
+        for (uint256 i = 0; i < paperlist.length; i++) {
             if (papers[i].status == Status.ADDED) {
-                return_value.push(papers[i]);
+                rlist[j] = (papers[i].paperID);
+                j += 1;
+                if (j >= 9) break;
             }
         }
-        return return_value;
+        return rlist;
     }
 
-    function viewReviewedPapers() public view {
-        // function to view all the papers (along with their review) that have been reviewed but arent accepted or rejected yet
-        Paper[] return_value;
-        for (uint256 i = 0; i < papers.length; i++) {
-            if (papers[i].status == Status.REVIEWED) {
-                return_value.push(papers[i]);
-            }
-        }
-        return return_value;
-    }
-
-    function viewPublishedPapers() public view {
+    function viewPublishedPapers() public view returns (uint256[10] memory) {
         // function to view all the papers that have been publshed
-        Paper[] return_value;
-        for (uint256 i = 0; i < papers.length; i++) {
+        uint256[10] memory rlist;
+        uint256 j = 0;
+        for (uint256 i = paperlist.length; i >= 0; i--) {
             if (papers[i].status == Status.ACCEPTED) {
-                return_value.push(papers[i]);
+                rlist[j] = (papers[i].paperID);
+                j += 1;
+                if (j >= 9) break;
             }
         }
-        return return_value;
+        return rlist;
     }
 
     function setVoteNumber(uint256 _number) public onlyOwner {
@@ -106,80 +153,71 @@ contract Conference is Ownable {
         review_limit = _number;
     }
 
-    function applyPaper(
-        string _paperContent,
-        address _publisher,
-        address[] _authors
-    ) public payable {
-        // function to send a paper to the conference
-        // store paper itself
-        Paper new_paper;
-        new_paper.paperID = uint256(
-            keccak256(
-                abi.encodePacked(block.timestamp, msg.sender, _paperContent)
-            )
-        );
-        new_paper.status = Status.ADDED;
-        new_paper.content = _paperContent;
-        new_paper.publisher = _publisher;
-        new_paper.authors = _authors;
-
-        papers.push(new_paper);
-        papers[new_paper.paperID] = new_paper;
-    }
-
     function addReview(
-        string _reviewContent,
+        string calldata _reviewContent,
         ReviewResult _reviewDecision,
         uint256 _paperID
-    ) public OnlyReviewer {
+    ) public validReviewer(msg.sender) {
         // function to submit a reviewer for a pending paper
         // can only be called by a reviewer
-        require(paper[_paperID].status == Status.ADDED);
-        paper[_paperID].reviewers.push(msg.sender);
-        paper[_paperID].reviews[msg.sender].reviewer = msg.sender;
-        paper[_paperID].reviews[msg.sender].content = _reviewContent;
-        paper[_paperID].reviews[msg.sender].reviewerDecision = _reviewDecision;
-        paper[_paperID].reviews[msg.sender].result = Status.PENDING;
+        require(papers[_paperID].status == Status.ADDED);
+        papers[_paperID].reviewers.push(msg.sender);
+        papers[_paperID].reviews[msg.sender].reviewer = msg.sender;
+        papers[_paperID].reviews[msg.sender].comments = _reviewContent;
+        papers[_paperID].reviews[msg.sender].reviewerDecision = _reviewDecision;
+        papers[_paperID].reviews[msg.sender].result = ReviewResult.PENDING;
     }
 
     function addVote(
         Vote _vote,
         address reviewer,
         uint256 _paperID
-    ) public OnlyReviewer {
+    ) public validReviewer(msg.sender) {
         // function to add a vote for a reviewed paper
         // can only be called by a reviewer
         // This function will check if there are enough votes to accept or reject the paper,
         // and will accordingly take action (distributing funds and published paper or reverting review)
-        require(papers[_paperID].status == Status.REVIEWED);
+        require(papers[_paperID].status == Status.ADDED);
 
-        Review review = papers[_paperID].reviews[reviewer];
+        require(
+            papers[_paperID].reviews[reviewer].result == ReviewResult.PENDING
+        );
 
-        require(review.result == ReviewResult.PENDING);
-
-        if (review.votes[msg.sender] == Vote.NONE) {
-            review.votedReviewers.push(msg.sender);
-        } else if (review.votes[msg.sender] == Vote.ACCEPTED) {
-            review.yesCount -= 1; // remove previous vote
-        } else if (review.votes[msg.sender] == Vote.REJECTED) {
-            review.noCount -= 1; // remove previous vote
+        if (papers[_paperID].reviews[reviewer].votes[msg.sender] == Vote.NONE) {
+            papers[_paperID].reviews[reviewer].votedReviewers.push(msg.sender);
+        } else if (
+            papers[_paperID].reviews[reviewer].votes[msg.sender] ==
+            Vote.ACCEPTED
+        ) {
+            papers[_paperID].reviews[reviewer].yesCount -= 1; // remove previous vote
+        } else if (
+            papers[_paperID].reviews[reviewer].votes[msg.sender] ==
+            Vote.REJECTED
+        ) {
+            papers[_paperID].reviews[reviewer].noCount -= 1; // remove previous vote
         }
 
-        review.votes[msg.sender] = _vote;
+        papers[_paperID].reviews[reviewer].votes[msg.sender] = _vote;
         if (_vote == Vote.ACCEPTED) {
-            review.yesCount += 1;
-            if (review.yesCount >= vote_limit) {
-                review.result = ReviewResult.ACCEPTED;
+            papers[_paperID].reviews[reviewer].yesCount += 1;
+            if (papers[_paperID].reviews[reviewer].yesCount >= vote_limit) {
+                papers[_paperID].reviews[reviewer].result = ReviewResult
+                    .ACCEPTED;
 
                 papers[_paperID].reviewers.push(msg.sender);
 
-                if (review.reviewerDecision == ReviewResult.ACCEPTED) {
+                if (
+                    papers[_paperID].reviews[reviewer].reviewerDecision ==
+                    ReviewResult.ACCEPTED
+                ) {
                     papers[_paperID].acceptCount += 1;
                     if (papers[_paperID].acceptCount >= review_limit) {
                         papers[_paperID].status = Status.ACCEPTED;
                     }
-                } else if (review.reviewerDecision == ReviewResult.REJECTED) {
+                } else if (
+                    papers[_paperID].reviews[reviewer].reviewerDecision ==
+                    ReviewResult.REJECTED
+                ) {
                     papers[_paperID].rejectCount += 1;
                     if (papers[_paperID].rejectCount >= review_limit) {
                         papers[_paperID].status = Status.REJECTED;
@@ -189,12 +227,11 @@ contract Conference is Ownable {
                 // transfer money appropriately to reviewers involved
             }
         } else if (_vote == Vote.REJECTED) {
-            review.noCount += 1;
-            if (review.noCount >= vote_limit) {
-                review.result = ReviewResult.REJECTED;
+            papers[_paperID].reviews[reviewer].noCount += 1;
+            if (papers[_paperID].reviews[reviewer].noCount >= vote_limit) {
+                papers[_paperID].reviews[reviewer].result = ReviewResult
+                    .REJECTED;
             }
         }
-
-        papers[_paperID].reviews[reviewer] = review;
     }
 }
