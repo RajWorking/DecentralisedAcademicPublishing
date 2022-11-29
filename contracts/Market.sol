@@ -4,17 +4,8 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 enum Status {
     ADDED,
-    REVIEWED,
     REJECTED,
     ACCEPTED
-}
-
-struct Paper {
-    string content;
-    address publisher;
-    address[] authors;
-    Status status;
-    uint256 paperID;
 }
 
 enum Vote {
@@ -24,24 +15,40 @@ enum Vote {
 }
 
 enum ReviewResult {
+    PENDING,
     ACCEPTED,
     REJECTED
 }
 
-struct Review {
+struct Paper {
+    uint256 paperID;
     string content;
+    address publisher;
+    address[] authors;
+    address[] reviewers;
+    mapping(address => Review) reviews;
+    Status status;
+    uint256 acceptCount;
+    uint256 rejectCount;
+}
+
+struct Review {
     address reviewer;
-    mapping(address => Vote[]) votes;
+    uint256 paperID;
+    string content;
+    ReviewResult reviewerDecision;
+    address[] votedReviewers;
+    mapping(address => Vote) votes;
+    ReviewResult result;
     uint256 yesCount;
     uint256 noCount;
-    ReviewResult result;
 }
 
 contract Conference is Ownable {
     mapping(address => uint256) reviewers;
     mapping(uint256 => Paper) papers;
-    mapping(uint256 => Review) reviews;
-    uint256 limit = 0;
+    uint256 vote_limit = 0;
+    uint256 review_limit = 0;
     uint256 num_papers = 0;
 
     // function to hire a reviewer
@@ -87,10 +94,16 @@ contract Conference is Ownable {
         return return_value;
     }
 
-    function setReviewNumber(uint256 _number) public onlyOwner {
+    function setVoteNumber(uint256 _number) public onlyOwner {
         // function to set the number of votes needed for a decision to be made
         // on whether the review is accepted or rejected
-        limit = _number;
+        vote_limit = _number;
+    }
+
+    function setReviewNumber(uint256 _number) public onlyOwner {
+        // function to set the number of reviews needed for a decision to be made
+        // on whether the paper is accepted or rejected
+        review_limit = _number;
     }
 
     function applyPaper(
@@ -101,63 +114,87 @@ contract Conference is Ownable {
         // function to send a paper to the conference
         // store paper itself
         Paper new_paper;
+        new_paper.paperID = uint256(
+            keccak256(
+                abi.encodePacked(block.timestamp, msg.sender, _paperContent)
+            )
+        );
         new_paper.status = Status.ADDED;
         new_paper.content = _paperContent;
         new_paper.publisher = _publisher;
         new_paper.authors = _authors;
-        new_paper.paperID = papers.length;
-        papers.push(new_paper);
 
-        // store dummy review to be filled later
-        Review new_review;
-        reviews.push(new_review);
+        papers.push(new_paper);
+        papers[new_paper.paperID] = new_paper;
     }
 
-    function addReview(string _reviewContent, uint256 _paperID)
-        public
-        OnlyReviewer
-    {
+    function addReview(
+        string _reviewContent,
+        ReviewResult _reviewDecision,
+        uint256 _paperID
+    ) public OnlyReviewer {
         // function to submit a reviewer for a pending paper
         // can only be called by a reviewer
         require(paper[_paperID].status == Status.ADDED);
-        reviews[_paperID].content = _reviewContent;
-        reviews[_paperID].reviewer = msg.sender;
-        reviews[_paperID].status = Status.REVIEWED;
+        paper[_paperID].reviewers.push(msg.sender);
+        paper[_paperID].reviews[msg.sender].reviewer = msg.sender;
+        paper[_paperID].reviews[msg.sender].content = _reviewContent;
+        paper[_paperID].reviews[msg.sender].reviewerDecision = _reviewDecision;
+        paper[_paperID].reviews[msg.sender].result = Status.PENDING;
     }
 
-    function addVote(Vote _vote, uint256 _paperID) public OnlyReviewer {
+    function addVote(
+        Vote _vote,
+        address reviewer,
+        uint256 _paperID
+    ) public OnlyReviewer {
         // function to add a vote for a reviewed paper
         // can only be called by a reviewer
         // This function will check if there are enough votes to accept or reject the paper,
         // and will accordingly take action (distributing funds and published paper or reverting review)
-        require(reviews[_paperID].status == Status.REVIEWED);
+        require(papers[_paperID].status == Status.REVIEWED);
 
-        if (reviews[_paperID].votes[msg.sender] == Vote.NONE) {
-            reviews[_paperID].votedReviewers.push(msg.sender);
-        } else if (reviews[_paperID].votes[msg.sender] == Vote.ACCEPTED) {
-            reviews[_paperID].yesCount -= 1;
-        } else if (reviews[_paperID].votes[msg.sender] == Vote.REJECTED) {
-            reviews[_paperID].noCount -= 1;
+        Review review = papers[_paperID].reviews[reviewer];
+
+        require(review.result == ReviewResult.PENDING);
+
+        if (review.votes[msg.sender] == Vote.NONE) {
+            review.votedReviewers.push(msg.sender);
+        } else if (review.votes[msg.sender] == Vote.ACCEPTED) {
+            review.yesCount -= 1; // remove previous vote
+        } else if (review.votes[msg.sender] == Vote.REJECTED) {
+            review.noCount -= 1; // remove previous vote
         }
 
-        reviews[_paperID].votes[msg.sender] = _vote;
+        review.votes[msg.sender] = _vote;
         if (_vote == Vote.ACCEPTED) {
-            reviews[_paperID].yesCount += 1;
-            if (reviews[_paperID].yesCount >= limit) {
-                if (reviews[_paperID].result == ReviewResult.ACCEPTED) {
-                    reviews[_paperID].status = Status.ACCEPTED;
+            review.yesCount += 1;
+            if (review.yesCount >= vote_limit) {
+                review.result = ReviewResult.ACCEPTED;
+
+                papers[_paperID].reviewers.push(msg.sender);
+
+                if (review.reviewerDecision == ReviewResult.ACCEPTED) {
+                    papers[_paperID].acceptCount += 1;
+                    if (papers[_paperID].acceptCount >= review_limit) {
+                        papers[_paperID].status = Status.ACCEPTED;
+                    }
+                } else if (review.reviewerDecision == ReviewResult.REJECTED) {
+                    papers[_paperID].rejectCount += 1;
+                    if (papers[_paperID].rejectCount >= review_limit) {
+                        papers[_paperID].status = Status.REJECTED;
+                    }
                 }
-                if (reviews[_paperID].result == ReviewResult.REJECTED) {
-                    reviews[_paperID].status = Status.REJECTED;
-                }
-                // transfer money appropriately to reviewers involved.
+
+                // transfer money appropriately to reviewers involved
             }
         } else if (_vote == Vote.REJECTED) {
-            reviews[_paperID].noCount += 1;
-            if (reviews[_paperID].noCount += 1 >= limit) {
-                Review new_review;
-                reviews[_paperID] = new_review;
+            review.noCount += 1;
+            if (review.noCount >= vote_limit) {
+                review.result = ReviewResult.REJECTED;
             }
         }
+
+        papers[_paperID].reviews[reviewer] = review;
     }
 }
